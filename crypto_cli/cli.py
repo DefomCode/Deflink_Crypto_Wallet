@@ -44,10 +44,46 @@ def main(ctx: typer.Context):
 
 @app.command()
 def rename(
-    old_name: str = typer.Argument(..., help="Текущее имя кошелька"),
-    new_name: str = typer.Argument(..., help="Новое имя кошелька"),
+    old_name: str = typer.Argument(None, help="Текущее имя кошелька"),
+    new_name: str = typer.Argument(None, help="Новое имя кошелька"),
 ):
-    """Переименовать существующий кошелек (безопасно, ключи не меняются)."""
+    """Переименовать кошелек. Без аргументов — интерактивный режим со списком."""
+    wallets = list_wallets()
+    
+    if not wallets:
+        console.print("[yellow]Кошельки не найдены. Сначала создайте или импортируйте кошелек.[/]")
+        raise typer.Exit()
+
+    # === ИНТЕРАКТИВНЫЙ РЕЖИМ ===
+    if old_name is None:
+        # Показываем список сразу
+        table = Table(title="📋 Ваши кошельки", show_header=True, header_style="bold cyan")
+        table.add_column("Имя", style="green")
+        table.add_column("Адрес", style="dim")
+        for n, addr in wallets.items():
+            table.add_row(n, addr)
+        console.print(table)
+        console.print()
+        
+        old_name = Prompt.ask("Введите имя кошелька для переименования")
+        
+        if old_name not in wallets:
+            console.print(f"[bold red]❌ Кошелек '{old_name}' не найден.[/]")
+            raise typer.Exit(code=1)
+            
+        # Подтверждение выбора
+        console.print(f"\nВы переименовываете: [bold green]{old_name}[/] ({wallets[old_name][:10]}...)")
+        new_name = Prompt.ask("Новое название")
+        
+    # === ONE-LINER РЕЖИМ (проверка если new_name не передан) ===
+    elif new_name is None:
+        if old_name not in wallets:
+            console.print(f"[bold red]❌ Кошелек '{old_name}' не найден.[/]")
+            raise typer.Exit(code=1)
+        console.print(f"Вы переименовываете: [bold green]{old_name}[/]")
+        new_name = Prompt.ask("Новое название")
+
+    # === ОБЩАЯ ЛОГИКА ===
     try:
         rename_wallet(old_name, new_name)
         console.print(f"[bold green]✓ Кошелек '{old_name}' переименован в '{new_name}'[/]")
