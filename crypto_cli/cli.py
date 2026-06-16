@@ -2,7 +2,7 @@ import typer
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
-from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets, decrypt_private_key, rename_wallet
+from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets, decrypt_private_key, rename_wallet, delete_wallet
 from crypto_cli.core.eth import get_eth_balance, prepare_transaction, estimate_tx_cost
 from crypto_cli.utils.api import get_eth_usd_price
 
@@ -113,6 +113,55 @@ def rename(
     try:
         rename_wallet(old_name, new_name)
         console.print(f"[bold green]✓ Кошелек '{old_name}' переименован в '{new_name}'[/]")
+    except ValueError as e:
+        console.print(f"[bold red]Ошибка: {e}[/]")
+        raise typer.Exit(code=1)
+
+@app.command()
+def delete(
+    name: str = typer.Argument(None, help="Имя кошелька для удаления"),
+):
+    """Удалить кошелек из хранилища (требуется подтверждение именем)."""
+    wallets = list_wallets()
+    
+    if not wallets:
+        console.print("[yellow]Кошельки не найдены.[/]")
+        raise typer.Exit()
+
+    # === ИНТЕРАКТИВНЫЙ РЕЖИМ ===
+    if name is None:
+        table = Table(title="📋 Ваши кошельки", show_header=True, header_style="bold cyan")
+        table.add_column("Имя", style="green")
+        table.add_column("Адрес", style="dim")
+        for n, addr in wallets.items():
+            table.add_row(n, addr)
+        console.print(table)
+        console.print()
+        
+        name = Prompt.ask("Введите имя кошелька для удаления")
+        
+        if name not in wallets:
+            console.print(f"[bold red]❌ Кошелек '{name}' не найден.[/]")
+            raise typer.Exit(code=1)
+
+    # === ОБЩАЯ ЛОГИКА ПОДТВЕРЖДЕНИЯ ===
+    if name not in wallets:
+        console.print(f"[bold red]❌ Кошелек '{name}' не найден.[/]")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[bold red]⚠ ВЫ УДАЛЯЕТЕ КОШЕЛЕК: {name}[/]")
+    console.print(f"[red]Адрес: {wallets[name]}[/]")
+    console.print("[yellow]Это действие необратимо. Приватный ключ будет удален навсегда.[/]\n")
+    
+    confirm_name = Prompt.ask(f"[bold]Для подтверждения введите имя кошелька ({name})[/]")
+    
+    if confirm_name != name:
+        console.print("[bold red]❌ Имя не совпало. Удаление отменено.[/]")
+        raise typer.Exit(code=1)
+        
+    try:
+        delete_wallet(name)
+        console.print(f"[bold green]✓ Кошелек '{name}' успешно удален.[/]")
     except ValueError as e:
         console.print(f"[bold red]Ошибка: {e}[/]")
         raise typer.Exit(code=1)

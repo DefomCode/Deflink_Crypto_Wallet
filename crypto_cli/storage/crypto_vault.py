@@ -131,3 +131,19 @@ def decrypt_private_key(name: str, password: str) -> str | None:
         return decrypted.decode()
     except InvalidToken:
         return None
+
+def delete_wallet(name: str) -> None:
+    """Удаляет кошелек из хранилища. Не требует пароля."""
+    if not VAULT_FILE.exists():
+        raise ValueError("Хранилище не найдено")
+        
+    with open(VAULT_FILE, 'r') as f:
+        data = json.load(f)
+        
+    if name not in data:
+        raise ValueError(f"Кошелек '{name}' не найден")
+        
+    del data[name]
+    
+    with open(VAULT_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
