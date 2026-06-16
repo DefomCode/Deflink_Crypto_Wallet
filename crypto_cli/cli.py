@@ -12,12 +12,38 @@ console = Console()
 
 @app.command()
 def create(
-    name: str = typer.Argument(None, help="Имя нового кошелька. Если не указано — спросит интерактивно"),
+    name: str = typer.Argument(None, help="Имя нового кошелька"),
 ):
     """Создать новый холодный кошелек с шифрованием AES-256."""
+    wallets = list_wallets()
+    
+    # === ИНТЕРАКТИВНЫЙ РЕЖИМ ===
     if name is None:
-        name = Prompt.ask("Имя кошелька")
+        if wallets:
+            table = Table(title="📋 Существующие кошельки", show_header=True, header_style="bold cyan")
+            table.add_column("Имя", style="green")
+            table.add_column("Адрес", style="dim")
+            for n, addr in wallets.items():
+                table.add_row(n, addr)
+            console.print(table)
+            console.print()
         
+        name = Prompt.ask("Придумайте имя для нового кошелька")
+        
+        # Проверка на дубликат сразу в интерактиве
+        if name in wallets:
+            console.print(f"[bold red]❌ Имя '{name}' уже занято. Попробуйте другое.[/]")
+            raise typer.Exit(code=1)
+            
+        console.print(f"\nСоздаем кошелек: [bold green]{name}[/]")
+
+    # === ONE-LINER РЕЖИМ (проверка дубликата) ===
+    else:
+        if name in wallets:
+            console.print(f"[bold red]❌ Кошелек '{name}' уже существует. Используйте 'dcw rename' или другое имя.[/]")
+            raise typer.Exit(code=1)
+
+    # === ОБЩАЯ ЛОГИКА ===
     password = Prompt.ask("Пароль", password=True)
     confirm = Prompt.ask("Подтвердите пароль", password=True)
     
