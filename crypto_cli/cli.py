@@ -1,9 +1,10 @@
 import typer
+from web3 import Web3
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets, decrypt_private_key, rename_wallet, delete_wallet
-from crypto_cli.core.eth import get_eth_balance, prepare_transaction, estimate_tx_cost, sign_and_send_transaction
+from crypto_cli.core.eth import get_eth_balance, prepare_transaction, estimate_tx_cost, sign_and_send_transaction, wait_for_receipt
 from crypto_cli.utils.api import get_eth_usd_price
 
 MIN_RESERVE_ETH = 0.0003
@@ -241,17 +242,46 @@ def balance(
 
 @app.command()
 def pay(
-    from_name: str = typer.Argument(..., help="Имя кошелька-отправителя"),
-    to_address: str = typer.Argument(..., help="Адрес получателя (0x...)"),
-    amount: float = typer.Argument(..., help="Сумма в ETH"),
+    from_name: str = typer.Argument(None, help="Имя кошелька-отправителя"),
+    to_address: str = typer.Argument(None, help="Адрес получателя (0x...)"),
+    amount: float = typer.Argument(None, help="Сумма в ETH"),
 ):
-    """Подготовить и отправить перевод ETH."""
+    """Перевод ETH с гибридным UX (0-3 аргумента)."""
     wallets = list_wallets()
     
+    if not wallets:
+        console.print("[yellow]Кошельки не найдены. Сначала создайте или импортируйте.[/]")
+        raise typer.Exit()
+
+    # === ИНТЕРАКТИВНЫЙ ВЫБОР ОТПРАВИТЕЛЯ ===
+    if from_name is None:
+        table = Table(title="📋 Выберите кошелек-отправитель", show_header=True, header_style="bold cyan")
+        table.add_column("Имя", style="green")
+        table.add_column("Адрес", style="dim")
+        for n, addr in wallets.items():
+            table.add_row(n, addr)
+        console.print(table)
+        console.print()
+        from_name = Prompt.ask("Отправитель")
+        
     if from_name not in wallets:
         console.print(f"[bold red]❌ Кошелек '{from_name}' не найден.[/]")
         raise typer.Exit(code=1)
-        
+
+    # === ИНТЕРАКТИВНЫЙ ВВОД ПОЛУЧАТЕЛЯ ===
+    if to_address is None:
+        to_address = Prompt.ask("Адрес получателя (0x...)")
+
+    # === ИНТЕРАКТИВНЫЙ ВВОД СУММЫ ===
+    if amount is None:
+        amount_str = Prompt.ask("Сумма (ETH)")
+        try:
+            amount = float(amount_str)
+        except ValueError:
+            console.print("[bold red]❌ Некорректная сумма.[/]")
+            raise typer.Exit(code=1)
+
+    # === ОБЩАЯ ЛОГИКА (пароль, подготовка, подтверждение, отправка) ===
     password = Prompt.ask("Пароль от кошелька", password=True)
     private_key = decrypt_private_key(from_name, password)
     
@@ -289,7 +319,6 @@ def pay(
             return "[dim]? ETH[/]"
         return f"{eth_val:.6f} ETH"
 
-    # === ОБНОВЛЕННЫЙ ЭКРАН ПОДТВЕРЖДЕНИЯ ===
     console.print("\n[bold cyan]📋 Подтверждение транзакции[/]")
     console.print(f"  Отправитель: [green]{from_name}[/]")
     console.print(f"               [dim]{wallets[from_name]}[/]")
@@ -307,28 +336,24 @@ def pay(
         console.print(f"  Останется:     [dim]? ETH (не удалось получить баланс)[/]")
     console.print()
     
-    # === ЗАЩИТА ОТ ДУРАКА ===
     if current_balance is not None:
         if total_eth > current_balance:
-            console.print("[bold red]❌ Недостаточно средств для этой транзакции![/]")
+            console.print("[bold red]❌ Недостаточно средств![/]")
             raise typer.Exit(code=1)
         if remaining_eth < MIN_RESERVE_ETH:
-            console.print(f"[bold red]❌ Нельзя отправить всю сумму! Должен остаться резерв ≥ {MIN_RESERVE_ETH} ETH для будущих комиссий.[/]")
-            console.print(f"[yellow]Максимум к отправке: {current_balance - fee - MIN_RESERVE_ETH:.6f} ETH[/]")
+            console.print(f"[bold red]❌ Нельзя отправить всю сумму! Резерв ≥ {MIN_RESERVE_ETH} ETH.[/]")
+            console.print(f"[yellow]Максимум: {current_balance - fee - MIN_RESERVE_ETH:.6f} ETH[/]")
             raise typer.Exit(code=1)
 
-    confirm = Prompt.ask(
-        "[bold]Подтвердить отправку?[/] [dim](y/N)[/]",
-        default="N",
-        show_default=False
-    )
+    confirm = Prompt.ask("[bold]Подтвердить отправку?[/] [dim](y/N)[/]", default="N", show_default=False)
     
     if confirm.lower() != 'y':
         console.print("[yellow]Отменено пользователем.[/]")
         raise typer.Exit()
         
-    console.print("[cyan]⏳ Подписание и отправка транзакции...[/]")
+    console.print("[cyan]⏳ Подписание и отправка...[/]")
     
+    tx_hash = None
     try:
         tx_hash = sign_and_send_transaction(private_key, tx)
     except Exception as e:
@@ -338,9 +363,35 @@ def pay(
         del private_key
     
     if tx_hash is None:
-        console.print("[bold red]❌ Ошибка отправки. Проверьте баланс, газ или соединение.[/]")
+        console.print("[bold red]❌ Ошибка отправки. Проверьте баланс или соединение.[/]")
         raise typer.Exit(code=1)
         
-    console.print(f"[bold green]✓ Транзакция успешно отправлена![/]")
-    console.print(f"Хеш: [link=https://etherscan.io/tx/{tx_hash}]{tx_hash}[/link]")
-    console.print("[dim]Статус можно проверить через Etherscan или командой 'dcw history' (скоро)[/]")
+    etherscan_link = f"https://etherscan.io/tx/{tx_hash}"
+    console.print(f"[bold green]✓ Транзакция отправлена![/]")
+    console.print(f"Хеш: [link={etherscan_link}]{tx_hash}[/link]")
+    
+    # === ЭКРАН ОЖИДАНИЯ (Задача 3.3) ===
+    receipt = None
+    interrupted = False
+    try:
+        with console.status("[bold cyan]⏳ Ожидание подтверждения...", spinner="dots"):
+            receipt = wait_for_receipt(tx_hash)
+    except KeyboardInterrupt:
+        interrupted = True
+
+    # Вывод результата ВСЕГДА после спиннера
+    if interrupted:
+        console.print("\n[yellow]⚠ Ожидание прервано. Транзакция уже в сети![/]")
+        console.print(f"Статус: [link={etherscan_link}]{etherscan_link}[/link]")
+    elif receipt is None:
+        console.print("[yellow]⚠ Таймаут ожидания. Транзакция может быть еще в обработке.[/]")
+        console.print(f"Статус: [link={etherscan_link}]{etherscan_link}[/link]")
+    elif receipt.status == 1:
+        gas_used = receipt.gasUsed
+        effective_fee = float(Web3.from_wei(gas_used * tx['gasPrice'], 'ether'))
+        console.print(f"[bold green]✓ Подтверждена! Блок #{receipt.blockNumber}[/]")
+        console.print(f"  Факт. комиссия: [yellow]{effective_fee:.6f} ETH[/]")
+    else:
+        console.print("[bold red]❌ Транзакция упала (Reverted). Средства на месте, газ списан.[/]")
+        console.print(f"  Потрачено газа: [yellow]{receipt.gasUsed} units[/]")
+        console.print(f"  Детали: [link={etherscan_link}]{etherscan_link}[/link]")

@@ -1,5 +1,6 @@
 from web3 import Web3
 import requests
+import time
 
 # Более стабильные публичные RPC + User-Agent для обхода базовой защиты
 ETH_RPC_URL = "https://ethereum-rpc.publicnode.com"
@@ -62,3 +63,26 @@ def sign_and_send_transaction(private_key: str, tx: dict) -> str | None:
         # Логируем ошибку для отладки, но пользователю возвращаем None
         print(f"DEBUG TX ERROR: {e}") 
         return None
+
+def wait_for_receipt(tx_hash: str, timeout: int = 300, poll_interval: int = 5) -> dict | None:
+    """
+    Ждет подтверждения транзакции.
+    Возвращает receipt при успехе/ошибке или None при таймауте/прерывании.
+    """
+    try:
+        w3 = Web3(Web3.HTTPProvider(ETH_RPC_URL, request_kwargs={"timeout": 10}))
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                receipt = w3.eth.get_transaction_receipt(tx_hash)
+                if receipt is not None:
+                    return receipt
+            except Exception:
+                pass  # Транзакция еще не в блоке, ждем дальше
+                
+            time.sleep(poll_interval)
+            
+        return None  # Таймаут
+    except KeyboardInterrupt:
+        return None  # Пользователь нажал Ctrl+C
