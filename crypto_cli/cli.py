@@ -386,10 +386,6 @@ def pay(
         except Exception:
             pass  # Кэш не критичен
     
-    etherscan_link = f"https://etherscan.io/tx/{tx_hash}"
-    console.print(f"[bold green]✓ Транзакция отправлена![/]")
-    console.print(f"Хеш: [link={etherscan_link}]{tx_hash}[/link]")
-    
     # === ЭКРАН ОЖИДАНИЯ (Задача 3.3) ===
     receipt = None
     interrupted = False
