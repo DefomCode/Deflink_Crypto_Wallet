@@ -78,3 +78,11 @@ def import_wallet(name: str, private_key: str, password: str) -> str:
         json.dump(data, file, indent=2)
         
     return acct.address
+
+def list_wallets() -> dict:
+    """Возвращает словарь {имя: адрес} всех кошельков из хранилища."""
+    if not VAULT_FILE.exists():
+        return {}
+    with open(VAULT_FILE, 'r') as f:
+        data = json.load(f)
+    return {name: info["address"] for name, info in data.items()}

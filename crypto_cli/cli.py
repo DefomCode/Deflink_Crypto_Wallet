@@ -1,8 +1,8 @@
 import typer
 from rich.console import Console
 from rich.prompt import Prompt
-from crypto_cli.storage.crypto_vault import create_wallet, import_wallet
-
+from rich.table import Table
+from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets
 
 app = typer.Typer(help="DefLink Crypto Wallet (DCW)")
 console = Console()
@@ -56,3 +56,21 @@ def import_key(
     except Exception as e:
         console.print(f"[bold red]Неизвестная ошибка: {e}[/]")
         raise typer.Exit(code=1)
+
+@app.command(name="list")
+def show_wallets():
+    """Показать все сохраненные кошельки."""
+    wallets = list_wallets()
+    
+    if not wallets:
+        console.print("[yellow]Кошельки не найдены. Используйте 'dcw create' или 'dcw import-key'.[/]")
+        raise typer.Exit()
+
+    table = Table(title="💰 Ваши кошельки", show_header=True, header_style="bold cyan")
+    table.add_column("Имя", style="green", no_wrap=True)
+    table.add_column("Адрес (ETH)", style="white")
+    
+    for name, address in wallets.items():
+        table.add_row(name, address)
+        
+    console.print(table)
