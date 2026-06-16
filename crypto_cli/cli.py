@@ -6,6 +6,7 @@ from rich.table import Table
 from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets, decrypt_private_key, rename_wallet, delete_wallet
 from crypto_cli.core.eth import get_eth_balance, prepare_transaction, estimate_tx_cost, sign_and_send_transaction, wait_for_receipt
 from crypto_cli.utils.api import get_eth_usd_price
+from crypto_cli.storage.db import add_transaction, update_wallet_cache
 
 MIN_RESERVE_ETH = 0.0003
 
@@ -365,7 +366,26 @@ def pay(
     if tx_hash is None:
         console.print("[bold red]❌ Ошибка отправки. Проверьте баланс или соединение.[/]")
         raise typer.Exit(code=1)
-        
+    
+    
+    # === ЗАПИСЬ В ИСТОРИЮ (Задача 4.1) ===
+    try:
+        add_transaction(tx_hash, from_name, to_address, amount, fee)
+    except Exception as e:
+        console.print(f"[yellow]⚠ Не удалось сохранить в историю: {e}[/]")
+    
+    etherscan_link = f"https://etherscan.io/tx/{tx_hash}"
+    console.print(f"[bold green]✓ Транзакция отправлена![/]")
+    console.print(f"Хеш: [link={etherscan_link}]{tx_hash}[/link]")
+    
+    # Обновляем кэш баланса отправителя (опционально, можно делать в фоне)
+    if current_balance is not None and usd_price is not None:
+        try:
+            new_balance = current_balance - total_eth
+            update_wallet_cache(from_name, wallets[from_name], new_balance, new_balance * usd_price)
+        except Exception:
+            pass  # Кэш не критичен
+    
     etherscan_link = f"https://etherscan.io/tx/{tx_hash}"
     console.print(f"[bold green]✓ Транзакция отправлена![/]")
     console.print(f"Хеш: [link={etherscan_link}]{tx_hash}[/link]")
