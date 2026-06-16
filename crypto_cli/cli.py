@@ -2,43 +2,43 @@ import typer
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
-from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets
-from crypto_cli.core.eth import get_eth_balance
+from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets, decrypt_private_key
+from crypto_cli.core.eth import get_eth_balance, prepare_transaction, estimate_tx_cost
 from crypto_cli.utils.api import get_eth_usd_price
 
 
-app = typer.Typer(help="DefLink Crypto Wallet (DCW)")
+app = typer.Typer(help="DefLink Crypto Wallet (DCW) — автономный менеджер холодных крипто-кошельков")
 console = Console()
 
 @app.command()
 def create(
-    name: str = typer.Option(..., prompt="Wallet name (e.g. main)", help="Local alias for the wallet"),
+    name: str = typer.Option(..., prompt="Имя кошелька", help="Локальный алиас для нового кошелька"),
 ):
-    """Create a new cold wallet with AES-256 encryption."""
-    password = Prompt.ask("Password", password=True)
-    confirm = Prompt.ask("Confirm password", password=True)
+    """Создать новый холодный кошелек с шифрованием AES-256."""
+    password = Prompt.ask("Пароль", password=True)
+    confirm = Prompt.ask("Подтвердите пароль", password=True)
     
     if password != confirm:
-        console.print("[bold red]Passwords do not match![/]")
+        console.print("[bold red]❌ Пароли не совпадают![/]")
         raise typer.Exit(code=1)
         
     try:
         address = create_wallet(name, password)
-        console.print(f"[bold green]✓ Wallet '{name}' created successfully![/]")
-        console.print(f"Address: [cyan]{address}[/]")
+        console.print(f"[bold green]✓ Кошелек '{name}' успешно создан![/]")
+        console.print(f"Адрес: [cyan]{address}[/]")
     except Exception as e:
-        console.print(f"[bold red]Error: {e}[/]")
+        console.print(f"[bold red]Ошибка: {e}[/]")
         raise typer.Exit(code=1)
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context):
-    """If no command is passed, launch TUI (placeholder for now)."""
+    """Запуск без команды — заглушка для будущего TUI."""
     if ctx.invoked_subcommand is None:
-        console.print("[yellow]TUI mode coming soon. Use 'dcw --help' for commands.[/]")
+        console.print("[yellow]TUI скоро будет. Используйте 'dcw --help' для списка команд.[/]")
 
 @app.command()
 def import_key(
-    name: str = typer.Option(..., prompt="Имя кошелька", help="Локальный алиас"),
+    name: str = typer.Option(..., prompt="Имя кошелька", help="Локальный алиас для импортируемого кошелька"),
 ):
     """Импортировать существующий приватный ключ (офлайн-валидация)."""
     pk = Prompt.ask("Приватный ключ (0x...)", password=True)
@@ -51,7 +51,7 @@ def import_key(
         
     try:
         address = import_wallet(name, pk, password)
-        console.print(f"[bold green]✓ Кошелек '{name}' импортирован![/]")
+        console.print(f"[bold green]✓ Кошелек '{name}' успешно импортирован![/]")
         console.print(f"Адрес: [cyan]{address}[/]")
     except ValueError as e:
         console.print(f"[bold red]Ошибка: {e}[/]")
@@ -62,7 +62,7 @@ def import_key(
 
 @app.command(name="list")
 def show_wallets():
-    """Показать все сохраненные кошельки."""
+    """Показать список всех сохраненных кошельков."""
     wallets = list_wallets()
     
     if not wallets:
@@ -80,7 +80,7 @@ def show_wallets():
 
 @app.command()
 def balance(
-    name: str = typer.Argument(None, help="Имя кошелька. Если не указано - спросит интерактивно"),
+    name: str = typer.Argument(None, help="Имя кошелька. Если не указано — спросит интерактивно"),
 ):
     """Проверить баланс кошелька в ETH и USD."""
     wallets = list_wallets()
@@ -107,3 +107,65 @@ def balance(
             console.print(f"Баланс: [bold green]{eth_balance:.6f} ETH[/] ([cyan]${usd_value:,.2f}[/])")
         else:
             console.print(f"Баланс: [bold green]{eth_balance:.6f} ETH[/] ([yellow]$ -- [/])")
+
+@app.command()
+def pay(
+    from_name: str = typer.Argument(..., help="Имя кошелька-отправителя"),
+    to_address: str = typer.Argument(..., help="Адрес получателя (0x...)"),
+    amount: float = typer.Argument(..., help="Сумма в ETH"),
+):
+    """Подготовить перевод ETH (экран подтверждения)."""
+    wallets = list_wallets()
+    
+    if from_name not in wallets:
+        console.print(f"[bold red]❌ Кошелек '{from_name}' не найден.[/]")
+        raise typer.Exit(code=1)
+        
+    # 1. Запрос пароля и расшифровка
+    password = Prompt.ask("Пароль от кошелька", password=True)
+    private_key = decrypt_private_key(from_name, password)
+    
+    if private_key is None:
+        console.print("[bold red]❌ Неверный пароль или кошелек не существует.[/]")
+        raise typer.Exit(code=1)
+        
+    # 2. Подготовка транзакции
+    console.print("[cyan]⏳ Расчет комиссии и проверка сети...[/]")
+    tx = prepare_transaction(wallets[from_name], to_address, amount)
+    
+    if tx is None:
+        console.print("[bold red]❌ Не удалось подготовить транзакцию (нет сети или RPC недоступен).[/]")
+        raise typer.Exit(code=1)
+        
+    # 3. Экран подтверждения (ИСПРАВЛЕННЫЙ)
+    fee = estimate_tx_cost(tx)
+    usd_price = get_eth_usd_price()
+    
+    total_eth = amount + fee
+    
+    # Форматируем USD строки
+    def fmt_usd(eth_val):
+        return f"(${eth_val * usd_price:,.2f})" if usd_price else ""
+    
+    console.print("\n[bold cyan]📋 Подтверждение транзакции[/]")
+    console.print(f"  Отправитель: [green]{from_name}[/]")
+    console.print(f"               [dim]{wallets[from_name]}[/]")
+    console.print(f"  Получатель:  [white]{to_address}[/]")
+    console.print(f"  Сумма:       [bold]{amount:.6f} ETH[/] {fmt_usd(amount)}")
+    console.print(f"  Комиссия:    [yellow]{fee:.6f} ETH[/] {fmt_usd(fee)}")
+    console.print(f"  ─────────────────────────────")
+    console.print(f"  Итого:       [bold green]{total_eth:.6f} ETH[/] {fmt_usd(total_eth)}\n")
+    
+    # Безопасное подтверждение с явным (y/N)
+    confirm = Prompt.ask(
+        "[bold]Подтвердить отправку?[/] [dim](y/N)[/]",
+        default="N",
+        show_default=False
+    )
+    
+    if confirm.lower() != 'y':
+        console.print("[yellow]Отменено пользователем.[/]")
+        raise typer.Exit()
+        
+    # TODO: Здесь будет подпись и отправка (Задача 3.2)
+    console.print("[yellow]⚠ Подпись и отправка пока не реализованы. Транзакция подготовлена успешно.[/]")

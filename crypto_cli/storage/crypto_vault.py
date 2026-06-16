@@ -1,11 +1,12 @@
 import json
 import os
+import base64
+from web3 import Web3
 from pathlib import Path
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-import base64
-from web3 import Web3
+from cryptography.fernet import InvalidToken
 
 VAULT_FILE = Path.home() / ".config" / "dcw" / "vault.json"
 
@@ -86,3 +87,24 @@ def list_wallets() -> dict:
     with open(VAULT_FILE, 'r') as f:
         data = json.load(f)
     return {name: info["address"] for name, info in data.items()}
+
+def decrypt_private_key(name: str, password: str) -> str | None:
+    """Расшифровывает приватный ключ. Возвращает hex-строку или None при неверном пароле."""
+    if not VAULT_FILE.exists():
+        return None
+        
+    with open(VAULT_FILE, 'r') as f:
+        data = json.load(f)
+        
+    if name not in data:
+        return None
+        
+    wallet_data = data[name]
+    try:
+        salt = base64.b64decode(wallet_data["salt"])
+        key = _derive_key(password, salt)
+        f = Fernet(key)
+        decrypted = f.decrypt(wallet_data["encrypted_pk"].encode())
+        return decrypted.decode()
+    except InvalidToken:
+        return None
