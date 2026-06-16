@@ -6,8 +6,7 @@ from rich.table import Table
 from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets, decrypt_private_key, rename_wallet, delete_wallet
 from crypto_cli.core.eth import get_eth_balance, prepare_transaction, estimate_tx_cost, sign_and_send_transaction, wait_for_receipt
 from crypto_cli.utils.api import get_eth_usd_price
-from crypto_cli.storage.db import add_transaction, update_wallet_cache
-
+from crypto_cli.storage.db import add_transaction, update_wallet_cache, get_pending_transactions, update_transaction_status, get_all_transactions, get_transaction_by_hash, count_transactions, get_connection
 MIN_RESERVE_ETH = 0.0003
 
 app = typer.Typer(help="DefLink Crypto Wallet (DCW) — автономный менеджер холодных крипто-кошельков")
@@ -241,6 +240,8 @@ def balance(
         else:
             console.print(f"Баланс: [bold green]{eth_balance:.6f} ETH[/] ([yellow]$ -- [/])")
 
+# === Блок команды оплаты ===
+
 @app.command()
 def pay(
     from_name: str = typer.Argument(None, help="Имя кошелька-отправителя"),
@@ -368,7 +369,7 @@ def pay(
         raise typer.Exit(code=1)
     
     
-    # === ЗАПИСЬ В ИСТОРИЮ (Задача 4.1) ===
+    # === ЗАПИСЬ В ИСТОРИЮ  ===
     try:
         add_transaction(tx_hash, from_name, to_address, amount, fee)
     except Exception as e:
@@ -386,7 +387,7 @@ def pay(
         except Exception:
             pass  # Кэш не критичен
     
-    # === ЭКРАН ОЖИДАНИЯ (Задача 3.3) ===
+    # === ЭКРАН ОЖИДАНИЯ ===
     receipt = None
     interrupted = False
     try:
@@ -411,3 +412,105 @@ def pay(
         console.print("[bold red]❌ Транзакция упала (Reverted). Средства на месте, газ списан.[/]")
         console.print(f"  Потрачено газа: [yellow]{receipt.gasUsed} units[/]")
         console.print(f"  Детали: [link={etherscan_link}]{etherscan_link}[/link]")
+
+# === Конец блока оплаты ===
+
+# === История транзакций ===
+@app.command()
+def history(
+    wallet_name: str = typer.Argument(None, help="Фильтр по кошельку"),
+    page: int = typer.Option(1, "--page", "-p", help="Номер страницы"),
+    limit: int = typer.Option(15, "--limit", "-l", help="Записей на странице"),
+):
+    """История транзакций с пагинацией."""
+    # Автообновление pending
+    pending_hashes = get_pending_transactions()
+    if pending_hashes:
+        console.print(f"[cyan]⏳ Проверка {len(pending_hashes)} pending...[/]")
+        for tx_hash in pending_hashes:
+            receipt = wait_for_receipt(tx_hash, timeout=10, poll_interval=2)
+            if receipt is not None:
+                if receipt.status == 1:
+                    effective_fee = float(Web3.from_wei(receipt.gasUsed * receipt.effectiveGasPrice, 'ether'))
+                    update_transaction_status(tx_hash, 'success', receipt.blockNumber, effective_fee)
+                else:
+                    update_transaction_status(tx_hash, 'failed', receipt.blockNumber, error_msg='Reverted')
+
+    offset = (page - 1) * limit
+    txs = get_all_transactions(wallet_name, limit=limit, offset=offset)
+    total = count_transactions(wallet_name)
+    total_pages = max(1, (total + limit - 1) // limit)
+
+    if not txs:
+        console.print("[yellow]Транзакции не найдены.[/]")
+        raise typer.Exit()
+
+    # show_lines=True добавляет горизонтальные разделители между строками
+    table = Table(
+        title=f"📜 История (стр. {page}/{total_pages}, всего {total})",
+        show_header=True,
+        header_style="bold cyan",
+        show_lines=True
+    )
+    table.add_column("Дата", style="dim", no_wrap=True)
+    table.add_column("Кошелек", style="green")
+    table.add_column("Куда", style="white")
+    table.add_column("Сумма", justify="right")
+    table.add_column("Комиссия", justify="right")
+    table.add_column("Статус", justify="center")
+    table.add_column("Хеш (Первые 16)", style="cyan", no_wrap=True)  # Короткий хеш вместо блока
+
+    status_styles = {
+        'success': '[bold green]✓ Success[/]',
+        'pending': '[bold yellow]⏳ Pending[/]',
+        'failed': '[bold red]✗ Failed[/]',
+    }
+
+    for tx in txs:
+        date_str = tx['created_at'][:16]
+        to_short = tx['to_address'][:8] + '...' + tx['to_address'][-6:]
+        status = status_styles.get(tx['status'], tx['status'])
+        hash_short = tx['tx_hash'][:16]
+        fee = f"{tx['fee_eth']:.6f}" if tx['fee_eth'] else '--'
+
+        table.add_row(date_str, tx['from_name'], to_short, f"{tx['amount_eth']:.6f}", fee, status, hash_short)
+
+    console.print(table)
+    console.print("\n[dim]💡 Детали транзакции: dcw tx <часть_хеша>[/]")
+    if page < total_pages:
+        next_cmd = f"dcw history --page {page + 1}"
+        if wallet_name:
+            next_cmd += f" {wallet_name}"
+        console.print(f"\n[dim]Следующая страница: {next_cmd}[/]")
+
+# === Получение ссылки транзакции из хеша  ===
+@app.command()
+def tx(
+    tx_hash: str = typer.Argument(..., help="Полный или частичный хеш транзакции"),
+):
+    """Показать детали транзакции и ссылку на Etherscan."""
+    from crypto_cli.storage.db import get_connection
+    
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM transactions WHERE tx_hash LIKE ?", (f"%{tx_hash}%",)
+    ).fetchone()
+    conn.close()
+    
+    if not row:
+        console.print(f"[bold red]❌ Транзакция '{tx_hash}' не найдена.[/]")
+        raise typer.Exit(code=1)
+    
+    tx_data = dict(row)
+    link = f"https://etherscan.io/tx/{tx_data['tx_hash']}"
+    
+    console.print(f"\n[bold cyan]Детали транзакции[/]")
+    console.print(f"  Хеш:       [link={link}]{tx_data['tx_hash']}[/link]")
+    console.print(f"  Статус:    {tx_data['status']}")
+    console.print(f"  Отправитель: {tx_data['from_name']}")
+    console.print(f"  Получатель:  {tx_data['to_address']}")
+    console.print(f"  Сумма:     {tx_data['amount_eth']:.6f} ETH")
+    console.print(f"  Комиссия:  {tx_data['fee_eth']:.6f} ETH" if tx_data['fee_eth'] else "  Комиссия:  --")
+    console.print(f"  Блок:      #{tx_data['block_number']}" if tx_data['block_number'] else "  Блок:      Pending")
+    console.print(f"  Дата:      {tx_data['created_at']}")
+    console.print(f"\n  🔗 [link={link}]{link}[/link]\n")
