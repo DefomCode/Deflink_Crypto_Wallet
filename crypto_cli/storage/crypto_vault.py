@@ -15,18 +15,22 @@ def _derive_key(password: str, salt: bytes) -> bytes:
     return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
 def create_wallet(name: str, password: str) -> str:
-    """Генерирует ключ, шифрует и сохраняет. Возвращает адрес."""
-    # 1. Генерация
+    """Генерирует ключ, шифрует AES-256, сохраняет в vault.json."""
+    # ПРОВЕРКА НА ДУБЛИКАТ
+    if VAULT_FILE.exists():
+        with open(VAULT_FILE, 'r') as f:
+            data = json.load(f)
+        if name in data:
+            raise ValueError(f"Кошелек с именем '{name}' уже существует. Используйте 'dcw rename' для смены имени.")
+    
     w3 = Web3()
     acct = w3.eth.account.create()
     
-    # 2. Шифрование
     salt = os.urandom(16)
     key = _derive_key(password, salt)
     f = Fernet(key)
     encrypted_pk = f.encrypt(acct.key.hex().encode())
     
-    # 3. Сохранение
     VAULT_FILE.parent.mkdir(parents=True, exist_ok=True)
     data = {}
     if VAULT_FILE.exists():
@@ -46,15 +50,19 @@ def create_wallet(name: str, password: str) -> str:
 
 def import_wallet(name: str, private_key: str, password: str) -> str:
     """Импортирует существующий ключ, валидирует офлайн, шифрует и сохраняет."""
+    # ПРОВЕРКА НА ДУБЛИКАТ (уже была, но убедимся что она есть)
+    if VAULT_FILE.exists():
+        with open(VAULT_FILE, 'r') as f:
+            data = json.load(f)
+        if name in data:
+            raise ValueError(f"Кошелек с именем '{name}' уже существует. Используйте 'dcw rename'.")
+
     w3 = Web3()
-    
-    # Офлайн-валидация: если ключ некорректен, здесь вылетит исключение
     try:
         acct = w3.eth.account.from_key(private_key)
     except Exception as e:
         raise ValueError(f"Невалидный приватный ключ: {e}")
     
-    # Шифрование (та же логика, что и в create_wallet)
     salt = os.urandom(16)
     key = _derive_key(password, salt)
     f = Fernet(key)
@@ -65,10 +73,7 @@ def import_wallet(name: str, private_key: str, password: str) -> str:
     if VAULT_FILE.exists():
         with open(VAULT_FILE, 'r') as file:
             data = json.load(file)
-    
-    if name in data:
-        raise ValueError(f"Кошелек с именем '{name}' уже существует")
-        
+            
     data[name] = {
         "address": acct.address,
         "encrypted_pk": encrypted_pk.decode(),
@@ -79,6 +84,24 @@ def import_wallet(name: str, private_key: str, password: str) -> str:
         json.dump(data, file, indent=2)
         
     return acct.address
+
+def rename_wallet(old_name: str, new_name: str) -> None:
+    """Безопасно переименовывает кошелек. Не трогает ключи."""
+    if not VAULT_FILE.exists():
+        raise ValueError("Хранилище не найдено")
+        
+    with open(VAULT_FILE, 'r') as f:
+        data = json.load(f)
+        
+    if old_name not in data:
+        raise ValueError(f"Кошелек '{old_name}' не найден")
+    if new_name in data:
+        raise ValueError(f"Имя '{new_name}' уже занято")
+        
+    data[new_name] = data.pop(old_name)
+    
+    with open(VAULT_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
 
 def list_wallets() -> dict:
     """Возвращает словарь {имя: адрес} всех кошельков из хранилища."""

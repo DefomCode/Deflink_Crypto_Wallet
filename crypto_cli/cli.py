@@ -2,7 +2,7 @@ import typer
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
-from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets, decrypt_private_key
+from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets, decrypt_private_key, rename_wallet
 from crypto_cli.core.eth import get_eth_balance, prepare_transaction, estimate_tx_cost
 from crypto_cli.utils.api import get_eth_usd_price
 
@@ -12,9 +12,12 @@ console = Console()
 
 @app.command()
 def create(
-    name: str = typer.Option(..., prompt="Имя кошелька", help="Локальный алиас для нового кошелька"),
+    name: str = typer.Argument(None, help="Имя нового кошелька. Если не указано — спросит интерактивно"),
 ):
     """Создать новый холодный кошелек с шифрованием AES-256."""
+    if name is None:
+        name = Prompt.ask("Имя кошелька")
+        
     password = Prompt.ask("Пароль", password=True)
     confirm = Prompt.ask("Подтвердите пароль", password=True)
     
@@ -26,6 +29,9 @@ def create(
         address = create_wallet(name, password)
         console.print(f"[bold green]✓ Кошелек '{name}' успешно создан![/]")
         console.print(f"Адрес: [cyan]{address}[/]")
+    except ValueError as e:
+        console.print(f"[bold red]Ошибка: {e}[/]")
+        raise typer.Exit(code=1)
     except Exception as e:
         console.print(f"[bold red]Ошибка: {e}[/]")
         raise typer.Exit(code=1)
@@ -35,6 +41,19 @@ def main(ctx: typer.Context):
     """Запуск без команды — заглушка для будущего TUI."""
     if ctx.invoked_subcommand is None:
         console.print("[yellow]TUI скоро будет. Используйте 'dcw --help' для списка команд.[/]")
+
+@app.command()
+def rename(
+    old_name: str = typer.Argument(..., help="Текущее имя кошелька"),
+    new_name: str = typer.Argument(..., help="Новое имя кошелька"),
+):
+    """Переименовать существующий кошелек (безопасно, ключи не меняются)."""
+    try:
+        rename_wallet(old_name, new_name)
+        console.print(f"[bold green]✓ Кошелек '{old_name}' переименован в '{new_name}'[/]")
+    except ValueError as e:
+        console.print(f"[bold red]Ошибка: {e}[/]")
+        raise typer.Exit(code=1)
 
 @app.command()
 def import_key(
