@@ -3,6 +3,9 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets
+from crypto_cli.core.eth import get_eth_balance
+from crypto_cli.utils.api import get_eth_usd_price
+
 
 app = typer.Typer(help="DefLink Crypto Wallet (DCW)")
 console = Console()
@@ -74,3 +77,33 @@ def show_wallets():
         table.add_row(name, address)
         
     console.print(table)
+
+@app.command()
+def balance(
+    name: str = typer.Argument(None, help="Имя кошелька. Если не указано - спросит интерактивно"),
+):
+    """Проверить баланс кошелька в ETH и USD."""
+    wallets = list_wallets()
+    
+    if name is None:
+        name = Prompt.ask("Имя кошелька")
+        
+    if name not in wallets:
+        console.print(f"[bold red]❌ Кошелек '{name}' не найден. Используйте 'dcw list'.[/]")
+        raise typer.Exit(code=1)
+        
+    address = wallets[name]
+    console.print(f"[cyan]⏳ Запрос баланса для {address}...[/]")
+    
+    eth_balance = get_eth_balance(address)
+    usd_price = get_eth_usd_price() if eth_balance is not None else None
+    
+    if eth_balance is None:
+        console.print("[bold yellow]⚠ Не удалось получить баланс (нет сети или RPC недоступен)[/]")
+        console.print(f"Баланс: [white]? ETH ($ -- )[/]")
+    else:
+        if usd_price is not None:
+            usd_value = eth_balance * usd_price
+            console.print(f"Баланс: [bold green]{eth_balance:.6f} ETH[/] ([cyan]${usd_value:,.2f}[/])")
+        else:
+            console.print(f"Баланс: [bold green]{eth_balance:.6f} ETH[/] ([yellow]$ -- [/])")
