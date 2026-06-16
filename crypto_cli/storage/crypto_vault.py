@@ -42,3 +42,39 @@ def create_wallet(name: str, password: str) -> str:
         json.dump(data, file, indent=2)
         
     return acct.address
+
+def import_wallet(name: str, private_key: str, password: str) -> str:
+    """Импортирует существующий ключ, валидирует офлайн, шифрует и сохраняет."""
+    w3 = Web3()
+    
+    # Офлайн-валидация: если ключ некорректен, здесь вылетит исключение
+    try:
+        acct = w3.eth.account.from_key(private_key)
+    except Exception as e:
+        raise ValueError(f"Невалидный приватный ключ: {e}")
+    
+    # Шифрование (та же логика, что и в create_wallet)
+    salt = os.urandom(16)
+    key = _derive_key(password, salt)
+    f = Fernet(key)
+    encrypted_pk = f.encrypt(acct.key.hex().encode())
+    
+    VAULT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = {}
+    if VAULT_FILE.exists():
+        with open(VAULT_FILE, 'r') as file:
+            data = json.load(file)
+    
+    if name in data:
+        raise ValueError(f"Кошелек с именем '{name}' уже существует")
+        
+    data[name] = {
+        "address": acct.address,
+        "encrypted_pk": encrypted_pk.decode(),
+        "salt": base64.b64encode(salt).decode()
+    }
+    
+    with open(VAULT_FILE, 'w') as file:
+        json.dump(data, file, indent=2)
+        
+    return acct.address
