@@ -3,9 +3,10 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets, decrypt_private_key, rename_wallet, delete_wallet
-from crypto_cli.core.eth import get_eth_balance, prepare_transaction, estimate_tx_cost
+from crypto_cli.core.eth import get_eth_balance, prepare_transaction, estimate_tx_cost, sign_and_send_transaction
 from crypto_cli.utils.api import get_eth_usd_price
 
+MIN_RESERVE_ETH = 0.0003
 
 app = typer.Typer(help="DefLink Crypto Wallet (DCW) — автономный менеджер холодных крипто-кошельков")
 console = Console()
@@ -244,14 +245,13 @@ def pay(
     to_address: str = typer.Argument(..., help="Адрес получателя (0x...)"),
     amount: float = typer.Argument(..., help="Сумма в ETH"),
 ):
-    """Подготовить перевод ETH (экран подтверждения)."""
+    """Подготовить и отправить перевод ETH."""
     wallets = list_wallets()
     
     if from_name not in wallets:
         console.print(f"[bold red]❌ Кошелек '{from_name}' не найден.[/]")
         raise typer.Exit(code=1)
         
-    # 1. Запрос пароля и расшифровка
     password = Prompt.ask("Пароль от кошелька", password=True)
     private_key = decrypt_private_key(from_name, password)
     
@@ -259,24 +259,37 @@ def pay(
         console.print("[bold red]❌ Неверный пароль или кошелек не существует.[/]")
         raise typer.Exit(code=1)
         
-    # 2. Подготовка транзакции
     console.print("[cyan]⏳ Расчет комиссии и проверка сети...[/]")
-    tx = prepare_transaction(wallets[from_name], to_address, amount)
+    
+    current_balance = None
+    tx = None
+    try:
+        current_balance = get_eth_balance(wallets[from_name])
+        tx = prepare_transaction(wallets[from_name], to_address, amount)
+    except Exception as e:
+        console.print(f"[bold red]Ошибка подготовки: {e}[/]")
+        raise typer.Exit(code=1)
     
     if tx is None:
         console.print("[bold red]❌ Не удалось подготовить транзакцию (нет сети или RPC недоступен).[/]")
         raise typer.Exit(code=1)
         
-    # 3. Экран подтверждения (ИСПРАВЛЕННЫЙ)
     fee = estimate_tx_cost(tx)
     usd_price = get_eth_usd_price()
-    
     total_eth = amount + fee
+    remaining_eth = (current_balance - total_eth) if current_balance is not None else None
     
-    # Форматируем USD строки
     def fmt_usd(eth_val):
-        return f"(${eth_val * usd_price:,.2f})" if usd_price else ""
+        if eth_val is None or usd_price is None:
+            return ""
+        return f"(${eth_val * usd_price:,.2f})"
     
+    def fmt_eth(eth_val):
+        if eth_val is None:
+            return "[dim]? ETH[/]"
+        return f"{eth_val:.6f} ETH"
+
+    # === ОБНОВЛЕННЫЙ ЭКРАН ПОДТВЕРЖДЕНИЯ ===
     console.print("\n[bold cyan]📋 Подтверждение транзакции[/]")
     console.print(f"  Отправитель: [green]{from_name}[/]")
     console.print(f"               [dim]{wallets[from_name]}[/]")
@@ -284,9 +297,26 @@ def pay(
     console.print(f"  Сумма:       [bold]{amount:.6f} ETH[/] {fmt_usd(amount)}")
     console.print(f"  Комиссия:    [yellow]{fee:.6f} ETH[/] {fmt_usd(fee)}")
     console.print(f"  ─────────────────────────────")
-    console.print(f"  Итого:       [bold green]{total_eth:.6f} ETH[/] {fmt_usd(total_eth)}\n")
+    console.print(f"  Текущий баланс: [white]{fmt_eth(current_balance)}[/] {fmt_usd(current_balance)}")
+    console.print(f"  Итого спишется: [bold]-{total_eth:.6f} ETH[/] {fmt_usd(total_eth)}")
     
-    # Безопасное подтверждение с явным (y/N)
+    if remaining_eth is not None:
+        color = "green" if remaining_eth >= MIN_RESERVE_ETH else "red"
+        console.print(f"  Останется:     [{color}]{remaining_eth:.6f} ETH[/] {fmt_usd(remaining_eth)}")
+    else:
+        console.print(f"  Останется:     [dim]? ETH (не удалось получить баланс)[/]")
+    console.print()
+    
+    # === ЗАЩИТА ОТ ДУРАКА ===
+    if current_balance is not None:
+        if total_eth > current_balance:
+            console.print("[bold red]❌ Недостаточно средств для этой транзакции![/]")
+            raise typer.Exit(code=1)
+        if remaining_eth < MIN_RESERVE_ETH:
+            console.print(f"[bold red]❌ Нельзя отправить всю сумму! Должен остаться резерв ≥ {MIN_RESERVE_ETH} ETH для будущих комиссий.[/]")
+            console.print(f"[yellow]Максимум к отправке: {current_balance - fee - MIN_RESERVE_ETH:.6f} ETH[/]")
+            raise typer.Exit(code=1)
+
     confirm = Prompt.ask(
         "[bold]Подтвердить отправку?[/] [dim](y/N)[/]",
         default="N",
@@ -297,5 +327,20 @@ def pay(
         console.print("[yellow]Отменено пользователем.[/]")
         raise typer.Exit()
         
-    # TODO: Здесь будет подпись и отправка (Задача 3.2)
-    console.print("[yellow]⚠ Подпись и отправка пока не реализованы. Транзакция подготовлена успешно.[/]")
+    console.print("[cyan]⏳ Подписание и отправка транзакции...[/]")
+    
+    try:
+        tx_hash = sign_and_send_transaction(private_key, tx)
+    except Exception as e:
+        console.print(f"[bold red]❌ Критическая ошибка отправки: {e}[/]")
+        raise typer.Exit(code=1)
+    finally:
+        del private_key
+    
+    if tx_hash is None:
+        console.print("[bold red]❌ Ошибка отправки. Проверьте баланс, газ или соединение.[/]")
+        raise typer.Exit(code=1)
+        
+    console.print(f"[bold green]✓ Транзакция успешно отправлена![/]")
+    console.print(f"Хеш: [link=https://etherscan.io/tx/{tx_hash}]{tx_hash}[/link]")
+    console.print("[dim]Статус можно проверить через Etherscan или командой 'dcw history' (скоро)[/]")

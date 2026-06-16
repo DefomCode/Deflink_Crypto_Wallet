@@ -47,3 +47,18 @@ def prepare_transaction(from_address: str, to_address: str, amount_eth: float) -
 def estimate_tx_cost(tx: dict) -> float:
     """Возвращает стоимость комиссии в ETH."""
     return float(Web3.from_wei(tx['gas'] * tx['gasPrice'], 'ether'))
+
+def sign_and_send_transaction(private_key: str, tx: dict) -> str | None:
+    """Подписывает транзакцию и отправляет в сеть. Возвращает хеш или None при ошибке."""
+    try:
+        w3 = Web3(Web3.HTTPProvider(ETH_RPC_URL, request_kwargs={"timeout": 10}))
+        if not w3.is_connected():
+            return None
+            
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=private_key)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        return tx_hash.hex()
+    except Exception as e:
+        # Логируем ошибку для отладки, но пользователю возвращаем None
+        print(f"DEBUG TX ERROR: {e}") 
+        return None
