@@ -19,12 +19,19 @@
 
 ## Установка
 
-Через pipx (рекомендуется):
-```bash
-    pipx install git+https://github.com/defomcode/Deflink_Crypto_Wallet.git
-```
-Поддержка Tron требует библиотеку tronpy, которая на некоторых системах ставится отдельно:
-```bash
+### Arch Linux (рекомендуется)
+
+Скопируйте и выполните одну команду:
+
+    git clone https://github.com/DefomCode/Deflink_Crypto_Wallet.git && cd Deflink_Crypto_Wallet && makepkg -si && cd .. && rm -rf Deflink_Crypto_Wallet
+
+Все зависимости (включая Tron) установятся автоматически. После завершения:
+
+    dcw --help
+
+### Другие системы (pipx)
+
+    pipx install git+https://github.com/DefomCode/Deflink_Crypto_Wallet.git
     pipx inject dcw "coincurve==20.0.0" tronpy
 ```
 ## Использование
