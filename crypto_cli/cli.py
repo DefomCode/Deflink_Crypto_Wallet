@@ -5,9 +5,13 @@ from rich.prompt import Prompt
 from rich.table import Table
 from crypto_cli.storage.crypto_vault import create_wallet, import_wallet, list_wallets, decrypt_private_key, rename_wallet, delete_wallet
 from crypto_cli.core.eth import get_eth_balance, prepare_transaction, estimate_tx_cost, sign_and_send_transaction, wait_for_receipt
+from crypto_cli.core.eth_adapter import EthAdapter
 from crypto_cli.utils.api import get_eth_usd_price
-from crypto_cli.storage.db import add_transaction, update_wallet_cache, get_pending_transactions, update_transaction_status, get_all_transactions, get_transaction_by_hash, count_transactions, get_connection
+from crypto_cli.storage.db import add_transaction, update_wallet_cache, get_pending_transactions, update_transaction_status, get_all_transactions, get_transaction_by_hash, count_transactions, get_connection, get_wallet_caches 
+
 MIN_RESERVE_ETH = 0.0003
+
+adapter = EthAdapter()
 
 app = typer.Typer(help="DefLink Crypto Wallet (DCW) — автономный менеджер холодных крипто-кошельков")
 console = Console()
@@ -194,63 +198,86 @@ def import_key(
 
 @app.command(name="list")
 def show_wallets():
-    """Показать список всех сохраненных кошельков."""
+    """Показать список кошельков с последним известным балансом."""
     wallets = list_wallets()
     
     if not wallets:
         console.print("[yellow]Кошельки не найдены. Используйте 'dcw create' или 'dcw import-key'.[/]")
         raise typer.Exit()
 
+    caches = get_wallet_caches()
+    
     table = Table(title="💰 Ваши кошельки", show_header=True, header_style="bold cyan")
     table.add_column("Имя", style="green", no_wrap=True)
     table.add_column("Адрес (ETH)", style="white")
-    
+    table.add_column("Баланс", justify="right")
+    table.add_column("Обновлён", style="dim", justify="right")
+
     for name, address in wallets.items():
-        table.add_row(name, address)
+        cache = caches.get(address)
+        
+        if cache and cache["balance_eth"] is not None:
+            bal_str = f"{cache['balance_eth']:.6f} ETH"
+            if cache["balance_usd"] is not None:
+                bal_str += f" (${cache['balance_usd']:,.2f})"
+            updated_str = cache["updated_at"][:16]
+        else:
+            bal_str = "[dim]--[/]"
+            updated_str = "[dim]никогда[/]"
+            
+        table.add_row(name, address, bal_str, updated_str)
         
     console.print(table)
+    console.print("\n[dim]💡 Балансы обновляются при 'dcw balance' и 'dcw pay'. Для принудительного обновления: dcw balance <имя>[/]")
 
 @app.command()
 def balance(
     name: str = typer.Argument(None, help="Имя кошелька. Если не указано — спросит интерактивно"),
 ):
-    """Проверить баланс кошелька в ETH и USD."""
+    """Проверить баланс кошелька в нативной валюте и USD."""
     wallets = list_wallets()
-    
+
     if name is None:
         name = Prompt.ask("Имя кошелька")
-        
+
     if name not in wallets:
         console.print(f"[bold red]❌ Кошелек '{name}' не найден. Используйте 'dcw list'.[/]")
         raise typer.Exit(code=1)
-        
-    address = wallets[name]
-    console.print(f"[cyan]⏳ Запрос баланса для {address}...[/]")
-    
-    eth_balance = get_eth_balance(address)
-    usd_price = get_eth_usd_price() if eth_balance is not None else None
-    
-    if eth_balance is None:
-        console.print("[bold yellow]⚠ Не удалось получить баланс (нет сети или RPC недоступен)[/]")
-        console.print(f"Баланс: [white]? ETH ($ -- )[/]")
-    else:
-        if usd_price is not None:
-            usd_value = eth_balance * usd_price
-            console.print(f"Баланс: [bold green]{eth_balance:.6f} ETH[/] ([cyan]${usd_value:,.2f}[/])")
-        else:
-            console.print(f"Баланс: [bold green]{eth_balance:.6f} ETH[/] ([yellow]$ -- [/])")
 
+    address = wallets[name]
+    symbol = adapter.currency_symbol
+    console.print(f"[cyan]⏳ Запрос баланса для {address}...[/]")
+
+    coin_balance = adapter.get_balance(address)
+    usd_price = get_eth_usd_price() if coin_balance is not None else None
+
+    if coin_balance is None:
+        console.print("[bold yellow]⚠ Не удалось получить баланс (нет сети или RPC недоступен)[/]")
+        console.print(f"Баланс: [white]? {symbol} ($ -- )[/]")
+    else:
+        try:
+            update_wallet_cache(name, address, coin_balance, coin_balance * usd_price if usd_price else None)
+        except Exception:
+            pass
+
+        if usd_price is not None:
+            usd_value = coin_balance * usd_price
+            console.print(f"Баланс: [bold green]{coin_balance:.6f} {symbol}[/] ([cyan]${usd_value:,.2f}[/])")
+        else:
+            console.print(f"Баланс: [bold green]{coin_balance:.6f} {symbol}[/] ([yellow]$ -- [/])")
 # === Блок команды оплаты ===
 
 @app.command()
 def pay(
     from_name: str = typer.Argument(None, help="Имя кошелька-отправителя"),
-    to_address: str = typer.Argument(None, help="Адрес получателя (0x...)"),
-    amount: float = typer.Argument(None, help="Сумма в ETH"),
+    to_address: str = typer.Argument(None, help="Адрес получателя"),
+    amount: float = typer.Argument(None, help="Сумма"),
 ):
-    """Перевод ETH с гибридным UX (0-3 аргумента)."""
+    """Перевод средств с гибридным UX (0-3 аргумента)."""
     wallets = list_wallets()
-    
+    symbol = adapter.currency_symbol
+    explorer = adapter.explorer_url
+
     if not wallets:
         console.print("[yellow]Кошельки не найдены. Сначала создайте или импортируйте.[/]")
         raise typer.Exit()
@@ -265,153 +292,151 @@ def pay(
         console.print(table)
         console.print()
         from_name = Prompt.ask("Отправитель")
-        
+
     if from_name not in wallets:
         console.print(f"[bold red]❌ Кошелек '{from_name}' не найден.[/]")
         raise typer.Exit(code=1)
 
     # === ИНТЕРАКТИВНЫЙ ВВОД ПОЛУЧАТЕЛЯ ===
     if to_address is None:
-        to_address = Prompt.ask("Адрес получателя (0x...)")
+        to_address = Prompt.ask("Адрес получателя")
 
     # === ИНТЕРАКТИВНЫЙ ВВОД СУММЫ ===
     if amount is None:
-        amount_str = Prompt.ask("Сумма (ETH)")
+        amount_str = Prompt.ask(f"Сумма ({symbol})")
         try:
             amount = float(amount_str)
         except ValueError:
             console.print("[bold red]❌ Некорректная сумма.[/]")
             raise typer.Exit(code=1)
 
-    # === ОБЩАЯ ЛОГИКА (пароль, подготовка, подтверждение, отправка) ===
+    # === ОБЩАЯ ЛОГИКА ===
     password = Prompt.ask("Пароль от кошелька", password=True)
     private_key = decrypt_private_key(from_name, password)
-    
+
     if private_key is None:
         console.print("[bold red]❌ Неверный пароль или кошелек не существует.[/]")
         raise typer.Exit(code=1)
-        
+
     console.print("[cyan]⏳ Расчет комиссии и проверка сети...[/]")
-    
+
     current_balance = None
     tx = None
     try:
-        current_balance = get_eth_balance(wallets[from_name])
-        tx = prepare_transaction(wallets[from_name], to_address, amount)
+        current_balance = adapter.get_balance(wallets[from_name])
+        tx = adapter.prepare_transaction(wallets[from_name], to_address, amount)
     except Exception as e:
         console.print(f"[bold red]Ошибка подготовки: {e}[/]")
         raise typer.Exit(code=1)
-    
+
     if tx is None:
         console.print("[bold red]❌ Не удалось подготовить транзакцию (нет сети или RPC недоступен).[/]")
         raise typer.Exit(code=1)
-        
-    fee = estimate_tx_cost(tx)
-    usd_price = get_eth_usd_price()
-    total_eth = amount + fee
-    remaining_eth = (current_balance - total_eth) if current_balance is not None else None
-    
-    def fmt_usd(eth_val):
-        if eth_val is None or usd_price is None:
-            return ""
-        return f"(${eth_val * usd_price:,.2f})"
-    
-    def fmt_eth(eth_val):
-        if eth_val is None:
-            return "[dim]? ETH[/]"
-        return f"{eth_val:.6f} ETH"
 
-    console.print("\n[bold cyan]📋 Подтверждение транзакции[/]")
+    fee = adapter.estimate_tx_cost(tx)
+    usd_price = get_eth_usd_price()
+    total_coin = amount + fee
+    remaining = (current_balance - total_coin) if current_balance is not None else None
+
+    def fmt_usd(val):
+        if val is None or usd_price is None:
+            return ""
+        return f"(${val * usd_price:,.2f})"
+
+    def fmt_coin(val):
+        if val is None:
+            return f"[dim]? {symbol}[/]"
+        return f"{val:.6f} {symbol}"
+
+    console.print(f"\n[bold cyan]📋 Подтверждение транзакции[/]")
     console.print(f"  Отправитель: [green]{from_name}[/]")
     console.print(f"               [dim]{wallets[from_name]}[/]")
     console.print(f"  Получатель:  [white]{to_address}[/]")
-    console.print(f"  Сумма:       [bold]{amount:.6f} ETH[/] {fmt_usd(amount)}")
-    console.print(f"  Комиссия:    [yellow]{fee:.6f} ETH[/] {fmt_usd(fee)}")
+    console.print(f"  Сумма:       [bold]{amount:.6f} {symbol}[/] {fmt_usd(amount)}")
+    console.print(f"  Комиссия:    [yellow]{fee:.6f} {symbol}[/] {fmt_usd(fee)}")
     console.print(f"  ─────────────────────────────")
-    console.print(f"  Текущий баланс: [white]{fmt_eth(current_balance)}[/] {fmt_usd(current_balance)}")
-    console.print(f"  Итого спишется: [bold]-{total_eth:.6f} ETH[/] {fmt_usd(total_eth)}")
-    
-    if remaining_eth is not None:
-        color = "green" if remaining_eth >= MIN_RESERVE_ETH else "red"
-        console.print(f"  Останется:     [{color}]{remaining_eth:.6f} ETH[/] {fmt_usd(remaining_eth)}")
+    console.print(f"  Текущий баланс: [white]{fmt_coin(current_balance)}[/] {fmt_usd(current_balance)}")
+    console.print(f"  Итого спишется: [bold]-{total_coin:.6f} {symbol}[/] {fmt_usd(total_coin)}")
+
+    if remaining is not None:
+        color = "green" if remaining >= MIN_RESERVE_ETH else "red"
+        console.print(f"  Останется:     [{color}]{remaining:.6f} {symbol}[/] {fmt_usd(remaining)}")
     else:
-        console.print(f"  Останется:     [dim]? ETH (не удалось получить баланс)[/]")
+        console.print(f"  Останется:     [dim]? {symbol} (не удалось получить баланс)[/]")
     console.print()
-    
+
     if current_balance is not None:
-        if total_eth > current_balance:
+        if total_coin > current_balance:
             console.print("[bold red]❌ Недостаточно средств![/]")
             raise typer.Exit(code=1)
-        if remaining_eth < MIN_RESERVE_ETH:
-            console.print(f"[bold red]❌ Нельзя отправить всю сумму! Резерв ≥ {MIN_RESERVE_ETH} ETH.[/]")
-            console.print(f"[yellow]Максимум: {current_balance - fee - MIN_RESERVE_ETH:.6f} ETH[/]")
+        if remaining < MIN_RESERVE_ETH:
+            console.print(f"[bold red]❌ Нельзя отправить всю сумму! Резерв ≥ {MIN_RESERVE_ETH} {symbol}.[/]")
+            console.print(f"[yellow]Максимум: {current_balance - fee - MIN_RESERVE_ETH:.6f} {symbol}[/]")
             raise typer.Exit(code=1)
 
     confirm = Prompt.ask("[bold]Подтвердить отправку?[/] [dim](y/N)[/]", default="N", show_default=False)
-    
+
     if confirm.lower() != 'y':
         console.print("[yellow]Отменено пользователем.[/]")
         raise typer.Exit()
-        
+
     console.print("[cyan]⏳ Подписание и отправка...[/]")
-    
+
     tx_hash = None
     try:
-        tx_hash = sign_and_send_transaction(private_key, tx)
+        tx_hash = adapter.sign_and_send(private_key, tx)
     except Exception as e:
         console.print(f"[bold red]❌ Критическая ошибка отправки: {e}[/]")
         raise typer.Exit(code=1)
     finally:
         del private_key
-    
+
     if tx_hash is None:
         console.print("[bold red]❌ Ошибка отправки. Проверьте баланс или соединение.[/]")
         raise typer.Exit(code=1)
-    
-    
-    # === ЗАПИСЬ В ИСТОРИЮ  ===
+
+    # === ЗАПИСЬ В ИСТОРИЮ ===
     try:
         add_transaction(tx_hash, from_name, to_address, amount, fee)
     except Exception as e:
         console.print(f"[yellow]⚠ Не удалось сохранить в историю: {e}[/]")
-    
-    etherscan_link = f"https://etherscan.io/tx/{tx_hash}"
+
+    tx_link = f"{explorer}/tx/{tx_hash}"
     console.print(f"[bold green]✓ Транзакция отправлена![/]")
-    console.print(f"Хеш: [link={etherscan_link}]{tx_hash}[/link]")
-    
-    # Обновляем кэш баланса отправителя (опционально, можно делать в фоне)
+    console.print(f"Хеш: [link={tx_link}]{tx_hash}[/link]")
+
+    # Обновляем кэш баланса
     if current_balance is not None and usd_price is not None:
         try:
-            new_balance = current_balance - total_eth
+            new_balance = current_balance - total_coin
             update_wallet_cache(from_name, wallets[from_name], new_balance, new_balance * usd_price)
         except Exception:
-            pass  # Кэш не критичен
-    
+            pass
+
     # === ЭКРАН ОЖИДАНИЯ ===
     receipt = None
     interrupted = False
     try:
         with console.status("[bold cyan]⏳ Ожидание подтверждения...", spinner="dots"):
-            receipt = wait_for_receipt(tx_hash)
+            receipt = adapter.wait_for_receipt(tx_hash)
     except KeyboardInterrupt:
         interrupted = True
 
-    # Вывод результата ВСЕГДА после спиннера
     if interrupted:
         console.print("\n[yellow]⚠ Ожидание прервано. Транзакция уже в сети![/]")
-        console.print(f"Статус: [link={etherscan_link}]{etherscan_link}[/link]")
+        console.print(f"Статус: [link={tx_link}]{tx_link}[/link]")
     elif receipt is None:
         console.print("[yellow]⚠ Таймаут ожидания. Транзакция может быть еще в обработке.[/]")
-        console.print(f"Статус: [link={etherscan_link}]{etherscan_link}[/link]")
-    elif receipt.status == 1:
-        gas_used = receipt.gasUsed
-        effective_fee = float(Web3.from_wei(gas_used * tx['gasPrice'], 'ether'))
-        console.print(f"[bold green]✓ Подтверждена! Блок #{receipt.blockNumber}[/]")
-        console.print(f"  Факт. комиссия: [yellow]{effective_fee:.6f} ETH[/]")
+        console.print(f"Статус: [link={tx_link}]{tx_link}[/link]")
+    elif receipt['status'] == 1:
+        gas_used = receipt['gas_used']
+        effective_fee = float(Web3.from_wei(gas_used * receipt['effective_gas_price'], 'ether'))
+        console.print(f"[bold green]✓ Подтверждена! Блок #{receipt['block_number']}[/]")
+        console.print(f"  Факт. комиссия: [yellow]{effective_fee:.6f} {symbol}[/]")
     else:
         console.print("[bold red]❌ Транзакция упала (Reverted). Средства на месте, газ списан.[/]")
-        console.print(f"  Потрачено газа: [yellow]{receipt.gasUsed} units[/]")
-        console.print(f"  Детали: [link={etherscan_link}]{etherscan_link}[/link]")
+        console.print(f"  Потрачено газа: [yellow]{receipt['gas_used']} units[/]")
+        console.print(f"  Детали: [link={tx_link}]{tx_link}[/link]")
 
 # === Конец блока оплаты ===
 

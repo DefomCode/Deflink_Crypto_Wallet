@@ -130,3 +130,12 @@ def count_transactions(filter_name: str | None = None):
         return row["cnt"]
     finally:
         conn.close()
+
+def get_wallet_caches():
+    """Возвращает словарь {address: {balance_eth, balance_usd, updated_at}} для всех кошельков."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT address, balance_eth, balance_usd, updated_at FROM wallet_cache").fetchall()
+        return {row["address"]: dict(row) for row in rows}
+    finally:
+        conn.close()
