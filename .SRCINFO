@@ -1,0 +1,14 @@
+pkgbase = dcw
+	pkgdesc = Автономный CLI-менеджер холодных крипто-кошельков (ETH + TRX)
+	pkgver = 0.1.0
+	pkgrel = 2
+	url = https://github.com/DefomCode/Deflink_Crypto_Wallet
+	install = dcw.install
+	arch = any
+	license = custom:non-commercial
+	depends = python-pipx
+	depends = git
+	source = git+https://github.com/DefomCode/Deflink_Crypto_Wallet.git#tag=v0.1.0
+	sha256sums = SKIP
+
+pkgname = dcw

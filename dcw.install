@@ -1,0 +1,45 @@
+post_install() {
+    echo ""
+    echo "📦 Установка DefLink Crypto Wallet через pipx..."
+    
+    # Проверяем наличие pipx
+    if ! command -v pipx &>/dev/null; then
+        echo "❌ pipx не найден. Установите: sudo pacman -S python-pipx"
+        echo "   Затем выполните: pipx install git+https://github.com/DefomCode/Deflink_Crypto_Wallet.git"
+        return 1
+    fi
+    
+    # Удаляем старую версию если есть
+    pipx uninstall dcw 2>/dev/null || true
+    
+    # Устанавливаем dcw через pipx
+    pipx install git+https://github.com/DefomCode/Deflink_Crypto_Wallet.git
+    
+    # Устанавливаем Tron поддержку (опционально, не блокируем если не получится)
+    echo "🔗 Установка поддержки Tron..."
+    pipx inject dcw "coincurve==20.0.0" tronpy 2>/dev/null || \
+        echo "⚠️  Tron не установлен автоматически. Выполните вручную:" && \
+        echo "   pipx inject dcw coincurve==20.0.0 tronpy"
+    
+    # Убеждаемся что pipx bin в PATH
+    if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+        echo ""
+        echo "⚠️  Добавьте ~/.local/bin в PATH:"
+        echo "   echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
+        echo "   source ~/.zshrc"
+    fi
+    
+    echo ""
+    echo "✅ DefLink Crypto Wallet установлен!"
+    echo "   Запустите: dcw --help"
+    echo ""
+}
+
+post_upgrade() {
+    post_install
+}
+
+pre_remove() {
+    echo "🗑️  Удаление DefLink Crypto Wallet из pipx..."
+    pipx uninstall dcw 2>/dev/null || true
+}
