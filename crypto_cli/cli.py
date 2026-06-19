@@ -47,12 +47,20 @@ def main(ctx: typer.Context):
 @app.command()
 def create(
     name: str = typer.Argument(None, help="Имя нового кошелька"),
-    network: str = typer.Option("ETH", "--net", "-n", help="Сеть: ETH или TRX"),
+    network: str = typer.Option(None, "--net", "-n", help="Сеть: ETH или TRX"),
 ):
     """Создать новый холодный кошелек с шифрованием AES-256."""
     wallets = list_wallets()
-    network = network.upper()
+
+    # === ИНТЕРАКТИВНЫЙ ВЫБОР СЕТИ (если не передан флаг) ===
+    if network is None:
+        console.print("\n[bold cyan]Выберите сеть:[/]")
+        console.print("  [green]1.[/] ETH (Ethereum)")
+        console.print("  [green]2.[/] TRX (Tron)")
+        choice = Prompt.ask("Сеть", choices=["1", "2", "ETH", "TRX"], default="1")
+        network = "ETH" if choice in ["1", "ETH"] else "TRX"
     
+    network = network.upper()
     if network not in ["ETH", "TRX"]:
         console.print("[bold red]❌ Поддерживаются только сети ETH и TRX.[/]")
         raise typer.Exit(code=1)
@@ -92,7 +100,6 @@ def create(
         raise typer.Exit(code=1)
 
     try:
-        # create_wallet теперь должен принимать network_type
         address = create_wallet(name, password, network_type=network)
         console.print(f"[bold green]✓ Кошелек '{name}' успешно создан![/]")
         console.print(f"Сеть:   [cyan]{network}[/]")
@@ -103,7 +110,6 @@ def create(
     except Exception as e:
         console.print(f"[bold red]Ошибка: {e}[/]")
         raise typer.Exit(code=1)
-
 
 @app.command()
 def rename(
@@ -155,16 +161,17 @@ def rename(
 
 @app.command()
 def delete(
-    name: str = typer.Argument(None, help="Имя кошелька для удаления"),
+    names: list[str] = typer.Argument(None, help="Имена кошельков для удаления (можно несколько)"),
 ):
-    """Удалить кошелек из хранилища (требуется подтверждение именем)."""
+    """Удалить один или несколько кошельков (требуется подтверждение именем)."""
     wallets = list_wallets()
 
     if not wallets:
         console.print("[yellow]Кошельки не найдены.[/]")
         raise typer.Exit()
 
-    if name is None:
+    # === ИНТЕРАКТИВНЫЙ РЕЖИМ (если не переданы аргументы) ===
+    if not names:
         table = Table(title="📋 Ваши кошельки", show_header=True, header_style="bold cyan")
         table.add_column("Имя", style="green")
         table.add_column("Сеть", style="dim")
@@ -176,34 +183,39 @@ def delete(
         console.print(table)
         console.print()
 
-        name = Prompt.ask("Введите имя кошелька для удаления")
+        names_str = Prompt.ask("Введите имена кошельков через пробел для удаления")
+        names = names_str.split()
 
+    # === УДАЛЕНИЕ ПО ОЧЕРЕДИ С ПОДТВЕРЖДЕНИЕМ ===
+    deleted_count = 0
+    for name in names:
         if name not in wallets:
-            console.print(f"[bold red]❌ Кошелек '{name}' не найден.[/]")
-            raise typer.Exit(code=1)
+            console.print(f"[yellow]⚠ Кошелек '{name}' не найден, пропускаю.[/]")
+            continue
 
-    if name not in wallets:
-        console.print(f"[bold red]❌ Кошелек '{name}' не найден.[/]")
-        raise typer.Exit(code=1)
+        info = wallets[name]
+        console.print(f"\n[bold red]⚠ ВЫ УДАЛЯЕТЕ КОШЕЛЕК: {name}[/]")
+        console.print(f"[red]Сеть:  {info.get('network', 'ETH')}[/]")
+        console.print(f"[red]Адрес: {info['address']}[/]")
+        console.print("[yellow]Это действие необратимо. Приватный ключ будет удален навсегда.[/]\n")
 
-    info = wallets[name]
-    console.print(f"\n[bold red]⚠ ВЫ УДАЛЯЕТЕ КОШЕЛЕК: {name}[/]")
-    console.print(f"[red]Сеть:  {info.get('network', 'ETH')}[/]")
-    console.print(f"[red]Адрес: {info['address']}[/]")
-    console.print("[yellow]Это действие необратимо. Приватный ключ будет удален навсегда.[/]\n")
+        confirm_name = Prompt.ask(f"[bold]Для подтверждения введите имя кошелька ({name})[/]")
 
-    confirm_name = Prompt.ask(f"[bold]Для подтверждения введите имя кошелька ({name})[/]")
+        if confirm_name != name:
+            console.print(f"[yellow]⚠ Имя не совпало. Удаление '{name}' отменено.[/]")
+            continue
 
-    if confirm_name != name:
-        console.print("[bold red]❌ Имя не совпало. Удаление отменено.[/]")
-        raise typer.Exit(code=1)
+        try:
+            delete_wallet(name)
+            console.print(f"[bold green]✓ Кошелек '{name}' успешно удален.[/]")
+            deleted_count += 1
+        except ValueError as e:
+            console.print(f"[bold red]Ошибка удаления '{name}': {e}[/]")
 
-    try:
-        delete_wallet(name)
-        console.print(f"[bold green]✓ Кошелек '{name}' успешно удален.[/]")
-    except ValueError as e:
-        console.print(f"[bold red]Ошибка: {e}[/]")
-        raise typer.Exit(code=1)
+    if deleted_count > 0:
+        console.print(f"\n[bold green]Удалено кошельков: {deleted_count}[/]")
+    else:
+        console.print("\n[yellow]Ни один кошелек не был удален.[/]")
 
 
 @app.command(name="import-key")
