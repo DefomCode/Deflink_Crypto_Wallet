@@ -42,6 +42,14 @@ def main(ctx: typer.Context):
         console.print("[yellow]TUI скоро будет. Используйте 'dcw --help' для списка команд.[/]")
 
 
+def _complete_wallet_names(incomplete: str):
+    """Автодополнение имён кошельков для Typer."""
+    try:
+        wallets = list_wallets()
+        return [name for name in wallets if name.startswith(incomplete)]
+    except Exception:
+        return []
+
 # ==================== КОШЕЛЬКИ ====================
 
 @app.command()
@@ -113,7 +121,7 @@ def create(
 
 @app.command()
 def rename(
-    old_name: str = typer.Argument(None, help="Текущее имя кошелька"),
+    old_name: str = typer.Argument(None, help="Текущее имя кошелька", autocompletion=_complete_wallet_names),
     new_name: str = typer.Argument(None, help="Новое имя кошелька"),
 ):
     """Переименовать кошелек. Без аргументов — интерактивный режим со списком."""
@@ -161,7 +169,7 @@ def rename(
 
 @app.command()
 def delete(
-    names: list[str] = typer.Argument(None, help="Имена кошельков для удаления (можно несколько)"),
+    names: str = typer.Argument(None, help="Имена кошельков для удаления (через пробел)", autocompletion=_complete_wallet_names),
 ):
     """Удалить один или несколько кошельков (требуется подтверждение именем)."""
     wallets = list_wallets()
@@ -170,8 +178,8 @@ def delete(
         console.print("[yellow]Кошельки не найдены.[/]")
         raise typer.Exit()
 
-    # === ИНТЕРАКТИВНЫЙ РЕЖИМ (если не переданы аргументы) ===
-    if not names:
+    # === ИНТЕРАКТИВНЫЙ РЕЖИМ ===
+    if names is None:
         table = Table(title="📋 Ваши кошельки", show_header=True, header_style="bold cyan")
         table.add_column("Имя", style="green")
         table.add_column("Сеть", style="dim")
@@ -184,11 +192,13 @@ def delete(
         console.print()
 
         names_str = Prompt.ask("Введите имена кошельков через пробел для удаления")
-        names = names_str.split()
+        name_list = names_str.split()
+    else:
+        name_list = names.split()
 
     # === УДАЛЕНИЕ ПО ОЧЕРЕДИ С ПОДТВЕРЖДЕНИЕМ ===
     deleted_count = 0
-    for name in names:
+    for name in name_list:
         if name not in wallets:
             console.print(f"[yellow]⚠ Кошелек '{name}' не найден, пропускаю.[/]")
             continue
@@ -216,7 +226,6 @@ def delete(
         console.print(f"\n[bold green]Удалено кошельков: {deleted_count}[/]")
     else:
         console.print("\n[yellow]Ни один кошелек не был удален.[/]")
-
 
 @app.command(name="import-key")
 def import_key(
@@ -315,7 +324,7 @@ def show_wallets():
 
 @app.command()
 def balance(
-    name: str = typer.Argument(None, help="Имя кошелька. Если не указано — спросит интерактивно"),
+    name: str = typer.Argument(None, help="Имя кошелька. Если не указано — спросит интерактивно", autocompletion=_complete_wallet_names),
 ):
     """Проверить баланс кошелька в нативной валюте и USD."""
     wallets = list_wallets()
@@ -368,7 +377,7 @@ def balance(
 
 @app.command()
 def pay(
-    from_name: str = typer.Argument(None, help="Имя кошелька-отправителя"),
+    from_name: str = typer.Argument(None, help="Имя кошелька-отправителя", autocompletion=_complete_wallet_names),
     to_address: str = typer.Argument(None, help="Адрес получателя"),
     amount: float = typer.Argument(None, help="Сумма"),
 ):
@@ -559,7 +568,7 @@ def pay(
 
 @app.command()
 def history(
-    wallet_name: str = typer.Argument(None, help="Фильтр по кошельку"),
+    wallet_name: str = typer.Argument(None, help="Фильтр по кошельку", autocompletion=_complete_wallet_names),
     page: int = typer.Option(1, "--page", "-p", help="Номер страницы"),
     limit: int = typer.Option(15, "--limit", "-l", help="Записей на странице"),
 ):
